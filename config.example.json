@@ -1,0 +1,9 @@
+{
+  "token": "YOUR_BOT_TOKEN",
+  "guildId": "YOUR_GUILD_ID",
+  "blockRoleId": "ROLE_THAT_BLOCKS_VOICE_CONNECT",
+  "trackRoleId": "ROLE_THAT_IS_TIMED",
+  "dailyLimitMinutes": 120,
+  "commandPrefix": "!tg",
+  "dataFile": "data/state.json"
+}

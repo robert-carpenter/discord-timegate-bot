@@ -1,0 +1,17 @@
+{
+  "name": "discord-timegate-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that enforces daily voice time limits via a blocking role.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.25.1",
+    "dotenv": "^17.2.3"
+  }
+}
