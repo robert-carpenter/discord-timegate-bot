@@ -19,11 +19,11 @@ function loadConfig() {
     token: process.env.DISCORD_TOKEN || fileConfig.token,
     commandPrefix: process.env.COMMAND_PREFIX || fileConfig.commandPrefix || '!tg',
     dataFile: process.env.DATA_FILE || fileConfig.dataFile || path.resolve(process.cwd(), 'data', 'state.json'),
-    guilds: fileConfig.guilds || [],
+    guilds: Array.isArray(fileConfig.guilds) ? fileConfig.guilds : [],
   };
 
   // Allow single-guild env-based override without editing config.json
-  if (process.env.GUILD_ID) {
+  if (process.env.GUILD_ID && process.env.BLOCK_ROLE_ID && process.env.TRACK_ROLE_ID) {
     config.guilds = [
       {
         id: process.env.GUILD_ID,
@@ -39,22 +39,14 @@ function loadConfig() {
     process.exit(1);
   }
 
-  if (!Array.isArray(config.guilds) || config.guilds.length === 0) {
-    console.error('No guilds configured. Set GUILD_ID env or add guilds[] to config.json');
+  if (!Array.isArray(config.guilds)) {
+    console.error('guilds must be an array in config.json');
     process.exit(1);
   }
 
   config.guilds.forEach((guild) => {
-    if (!guild.id) {
-      console.error('Each guild entry requires an id.');
-      process.exit(1);
-    }
-    if (!guild.blockRoleId) {
-      console.error(`Guild ${guild.id} missing blockRoleId.`);
-      process.exit(1);
-    }
-    if (!guild.trackRoleId) {
-      console.error(`Guild ${guild.id} missing trackRoleId.`);
+    if (!guild.id || !guild.blockRoleId || !guild.trackRoleId) {
+      console.error(`Guild entry incomplete (id, blockRoleId, trackRoleId required). Offending entry: ${JSON.stringify(guild)}`);
       process.exit(1);
     }
     if (!Number.isFinite(guild.dailyLimitMinutes) || guild.dailyLimitMinutes <= 0) {
@@ -67,6 +59,10 @@ function loadConfig() {
 }
 
 function saveDailyLimit(guildId, minutes) {
+  return saveGuildConfig({ id: guildId, dailyLimitMinutes: minutes });
+}
+
+function saveGuildConfig(partialGuildConfig) {
   let existing = {};
   if (fs.existsSync(CONFIG_PATH)) {
     try {
@@ -78,11 +74,11 @@ function saveDailyLimit(guildId, minutes) {
 
   // If guilds array exists, update the matching guild entry; otherwise seed one.
   let nextGuilds = Array.isArray(existing.guilds) ? existing.guilds : [];
-  const idx = nextGuilds.findIndex((g) => g.id === guildId);
+  const idx = nextGuilds.findIndex((g) => g.id === partialGuildConfig.id);
   if (idx >= 0) {
-    nextGuilds[idx] = { ...nextGuilds[idx], dailyLimitMinutes: minutes };
+    nextGuilds[idx] = { ...nextGuilds[idx], ...partialGuildConfig };
   } else {
-    nextGuilds.push({ id: guildId, dailyLimitMinutes: minutes });
+    nextGuilds.push(partialGuildConfig);
   }
 
   const next = { ...existing, guilds: nextGuilds };
@@ -92,4 +88,5 @@ function saveDailyLimit(guildId, minutes) {
 module.exports = {
   loadConfig,
   saveDailyLimit,
+  saveGuildConfig,
 };
