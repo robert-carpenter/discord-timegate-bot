@@ -37,11 +37,33 @@ Tracks how long users stay in voice channels, blocks them once they hit a config
 
 State is stored in `data/state.json` by default.
 
-## Commands (text, no slash yet)
-- `!tg setup` – interactive setup (requires **Manage Server**). Prompts for block role, track role, and daily limit. The bot ignores a guild until setup is complete.
-- `!tg time [user]` or `!tg status [user]` – show remaining voice time or block expiry. Without a user it shows your own; with a user (mention/ID) it requires **Manage Server**.
-- `!tg setlimit <minutes>` – update the daily limit (requires **Manage Server**). The value is also written to `config.json`.
+## Commands
+Slash (preferred):
+- `/setup block_role:<role> track_role:<role> daily_limit_minutes:<int>` – configure guild (Manage Server).
+- `/time [user]` – show remaining time/block status. Checking others requires Manage Server.
+- `/setlimit minutes:<int>` – update daily limit (Manage Server).
+
+Text (legacy):
+- `!tg setup` – interactive setup (Manage Server).
+- `!tg time [user]` / `!tg status [user]` – self or others (others require Manage Server).
+- `!tg setlimit <minutes>` – update limit (Manage Server).
 - `!tg help` – quick help text.
+
+## Deploying on Railway (Docker)
+1) Ensure your repository has the `Dockerfile` (included here).
+2) In Railway, create a new project from this repo.
+3) Set environment variables in the service:
+   - `DISCORD_TOKEN` (required)
+   - `COMMAND_PREFIX` (optional)
+   - Either:
+     - Single guild via env: `GUILD_ID`, `BLOCK_ROLE_ID`, `TRACK_ROLE_ID`, `DAILY_LIMIT_MINUTES`
+     - Or include a `config.json` in the repo with `guilds[]` configured (no secrets).
+   - Optionally `DATA_FILE` (e.g., `/data/state.json`) if you mount a volume for persistence.
+4) Build & deploy. The start command is `npm start` (from the Dockerfile).
+
+Notes for Railway:
+- File writes (state/config changes) are not persisted across deploys unless you attach a volume. If you need persistence, set `DATA_FILE` to a path on a mounted volume (e.g., `/data/state.json`) and attach a Railway volume to `/data`.
+- The bot uses the configured env/config at startup; `!tg setlimit` writes to `config.json` in the container, which will be lost on redeploy if not backed by a volume. Prefer env/config baked in the repo or add a volume for persistence.
 
 ## How it works
 - The bot listens for `voiceStateUpdate` events to start/end sessions (per guild).

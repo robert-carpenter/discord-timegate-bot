@@ -3,6 +3,10 @@ const {
   Events,
   GatewayIntentBits,
   PermissionsBitField,
+  PermissionFlagsBits,
+  REST,
+  Routes,
+  ApplicationCommandOptionType,
 } = require('discord.js');
 const { loadConfig, saveDailyLimit, saveGuildConfig } = require('./config');
 const { StateStore } = require('./stateStore');
@@ -22,6 +26,64 @@ const guildConfigs = new Map(
 );
 
 const setupSessions = new Map(); // guildId -> { userId, step, data }
+
+const slashCommands = [
+  {
+    name: 'setup',
+    description: 'Configure block role, track role, and daily limit for this server',
+    dm_permission: false,
+    default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
+    options: [
+      {
+        name: 'block_role',
+        description: 'Role that blocks voice connect',
+        type: ApplicationCommandOptionType.Role,
+        required: true,
+      },
+      {
+        name: 'track_role',
+        description: 'Role required to be timed',
+        type: ApplicationCommandOptionType.Role,
+        required: true,
+      },
+      {
+        name: 'daily_limit_minutes',
+        description: 'Daily limit in minutes',
+        type: ApplicationCommandOptionType.Integer,
+        required: true,
+        min_value: 1,
+      },
+    ],
+  },
+  {
+    name: 'time',
+    description: 'Show remaining voice time',
+    dm_permission: false,
+    options: [
+      {
+        name: 'user',
+        description: 'User to check (Manage Server required for others)',
+        type: ApplicationCommandOptionType.User,
+        required: false,
+      },
+    ],
+  },
+  {
+    name: 'setlimit',
+    description: 'Update the daily voice limit (Manage Server only)',
+    dm_permission: false,
+    default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
+    options: [
+      {
+        name: 'minutes',
+        description: 'Daily limit in minutes',
+        type: ApplicationCommandOptionType.Integer,
+        required: true,
+        min_value: 1,
+      },
+    ],
+  },
+];
 
 const client = new Client({
   intents: [
@@ -46,10 +108,15 @@ client.once(Events.ClientReady, () => {
 
   setInterval(processExpiredBlocks, 60 * 1000);
   setInterval(checkActiveSessions, 30 * 1000);
+
+  registerSlashCommands().catch((err) => {
+    console.error('Failed to register slash commands:', err);
+  });
 });
 
 client.on(Events.VoiceStateUpdate, handleVoiceStateUpdate);
 client.on(Events.MessageCreate, handleMessageCreate);
+client.on(Events.InteractionCreate, handleInteractionCreate);
 
 client.login(config.token);
 
@@ -397,21 +464,10 @@ async function handleSetupResponse(message, session) {
 
 async function finalizeSetup(message, session) {
   const guildId = message.guild.id;
-  const existing = guildConfigs.get(guildId) || {};
-  const merged = {
-    id: guildId,
+  const merged = applySetup(guildId, {
     blockRoleId: session.data.blockRoleId,
     trackRoleId: session.data.trackRoleId,
     dailyLimitMinutes: session.data.dailyLimitMinutes,
-    limitMs: session.data.dailyLimitMinutes * 60 * 1000,
-  };
-
-  guildConfigs.set(guildId, merged);
-  saveGuildConfig({
-    id: guildId,
-    blockRoleId: merged.blockRoleId,
-    trackRoleId: merged.trackRoleId,
-    dailyLimitMinutes: merged.dailyLimitMinutes,
   });
 
   await message.reply(
@@ -430,4 +486,168 @@ async function promptSetupNeeded(message) {
   await message.reply(
     `This server is not configured yet. An admin can run \`${config.commandPrefix}setup\` to configure block role, track role, and daily limit.`
   );
+}
+
+function applySetup(guildId, data) {
+  const merged = {
+    id: guildId,
+    blockRoleId: data.blockRoleId,
+    trackRoleId: data.trackRoleId,
+    dailyLimitMinutes: data.dailyLimitMinutes,
+    limitMs: data.dailyLimitMinutes * 60 * 1000,
+  };
+
+  guildConfigs.set(guildId, merged);
+  saveGuildConfig({
+    id: guildId,
+    blockRoleId: merged.blockRoleId,
+    trackRoleId: merged.trackRoleId,
+    dailyLimitMinutes: merged.dailyLimitMinutes,
+  });
+
+  return merged;
+}
+
+async function registerSlashCommands() {
+  const rest = new REST({ version: '10' }).setToken(config.token);
+  await rest.put(Routes.applicationCommands(client.user.id), { body: slashCommands });
+  console.log('Slash commands registered globally.');
+}
+
+async function handleInteractionCreate(interaction) {
+  if (!interaction.isChatInputCommand()) return;
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({ content: 'This bot only works in servers.', ephemeral: true });
+    return;
+  }
+  const guildConfig = guildConfigs.get(guildId);
+
+  switch (interaction.commandName) {
+    case 'setup':
+      await handleSetupInteraction(interaction);
+      break;
+    case 'time':
+      if (!guildConfig) {
+        await promptSetupNeededInteraction(interaction);
+        return;
+      }
+      await handleStatusInteraction(interaction, guildConfig);
+      break;
+    case 'setlimit':
+      if (!guildConfig) {
+        await promptSetupNeededInteraction(interaction);
+        return;
+      }
+      await handleSetLimitInteraction(interaction, guildConfig);
+      break;
+    default:
+      break;
+  }
+}
+
+async function handleStatusInteraction(interaction, guildConfig) {
+  const now = Date.now();
+  const targetUser = interaction.options.getUser('user') || interaction.user;
+
+  if (targetUser.id !== interaction.user.id) {
+    const member = interaction.member;
+    if (!member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+      await interaction.reply({
+        content: 'You need the Manage Server permission to view other users.',
+        ephemeral: true,
+      });
+      return;
+    }
+  }
+
+  const member =
+    interaction.guild.members.cache.get(targetUser.id) ||
+    (await interaction.guild.members.fetch(targetUser.id).catch(() => null));
+
+  if (!member) {
+    await interaction.reply({ content: 'Could not find that user in this server.', ephemeral: true });
+    return;
+  }
+
+  if (!shouldTrack(member, guildConfig)) {
+    await interaction.reply({
+      content:
+        member.id === interaction.user.id
+          ? 'You are not in the tracked role; no voice limit is applied.'
+          : `${member.user.tag} is not in the tracked role; no voice limit is applied.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const remainingMs = state.getRemainingMs(interaction.guildId, member.id, now, guildConfig.limitMs);
+  const isBlocked = state.isBlocked(interaction.guildId, member.id, now);
+  const blockExpiresAt = state.getBlockExpiry(interaction.guildId, member.id);
+
+  if (isBlocked) {
+    const expiry = blockExpiresAt ? new Date(blockExpiresAt).toUTCString() : 'unknown time';
+    await interaction.reply({
+      content:
+        member.id === interaction.user.id
+          ? `You are blocked from voice until ${expiry}.`
+          : `${member.user.tag} is blocked from voice until ${expiry}.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    content:
+      member.id === interaction.user.id
+        ? `You have ${formatDuration(remainingMs)} of voice time left today.`
+        : `${member.user.tag} has ${formatDuration(remainingMs)} of voice time left today.`,
+    ephemeral: true,
+  });
+}
+
+async function handleSetLimitInteraction(interaction, guildConfig) {
+  if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+    await interaction.reply({ content: 'You need the Manage Server permission to change the limit.', ephemeral: true });
+    return;
+  }
+  const minutes = interaction.options.getInteger('minutes');
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    await interaction.reply({ content: 'Minutes must be a positive number.', ephemeral: true });
+    return;
+  }
+
+  guildConfig.dailyLimitMinutes = minutes;
+  guildConfig.limitMs = minutes * 60 * 1000;
+  saveDailyLimit(interaction.guildId, minutes);
+  await interaction.reply({ content: `Daily voice limit updated to ${minutes} minutes.`, ephemeral: true });
+}
+
+async function handleSetupInteraction(interaction) {
+  if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+    await interaction.reply({ content: 'You need the Manage Server permission to run setup.', ephemeral: true });
+    return;
+  }
+
+  const blockRole = interaction.options.getRole('block_role');
+  const trackRole = interaction.options.getRole('track_role');
+  const minutes = interaction.options.getInteger('daily_limit_minutes');
+
+  const merged = applySetup(interaction.guildId, {
+    blockRoleId: blockRole.id,
+    trackRoleId: trackRole.id,
+    dailyLimitMinutes: minutes,
+  });
+
+  await interaction.reply({
+    content: `Setup complete. Blocking role: <@&${merged.blockRoleId}>, Tracking role: <@&${merged.trackRoleId}>, Daily limit: ${merged.dailyLimitMinutes} minutes.`,
+    ephemeral: true,
+  });
+}
+
+async function promptSetupNeededInteraction(interaction) {
+  await interaction.reply({
+    content: `This server is not configured yet. An admin can run \`${config.commandPrefix}setup\` (text) or \`/setup\` to configure block role, track role, and daily limit.`,
+    ephemeral: true,
+  });
 }
